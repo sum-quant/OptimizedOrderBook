@@ -3,54 +3,7 @@
 #include <type_traits> 
 #include<assert.h>
 using namespace std;
-/* This is an optimized order book implementation.
- * Conceptually an order book is two sets of levels, with each
- * level representing all the queued orders at a price.
- *
- * This implementation provides O(1) lookup of the best bid and offer
- * as well as the aggregated quantity for any price. It provides
- * very fast throughput (61.5ns / tick at last benchmark), although
- * note that there are some poor performance worst-case ticks.
- *
- * The ITCH feed sends some metadata about each order with each add_order
- * message, such as the price, quantity and symbol (really a number
- * referring to the symbol). The user is expected after that to keep
- * track of the metadata; for instance the delete message only has
- * the order id and the user is expected to know which symbol
- * that refers to as well as the price and size.
- *
- * This implementation uses several tricks. The first is that, while
- * a hashmap seems like a reasonable data structure to keep track of
- * the metadata for each order, in practice the ITCH feed generates
- * the order ids close together, not going past a max id of several
- * hundred million. We thus store the metadata for each order in an
- * array, so looking up the order metadata is a single dereference.
- * The order id generation has a side benefit that new orders are
- * likely to be near recently added orders, so the pages are likely
- * to be in the TLB and memory cache.
- *
- * Each order knows which book and price level it belongs to. So
- * to find all the data about an order requires two to three
- * dereferences. Also the quantities in each price level are held
- * in a pointed to data structure so that a reduce operation does
- * not need to search the levels but can modify the quantity at the
- * level directly from the pointer stored in the order metadata.
- *
- * Another trick is that each price level is represented as a price
- * and quantity, and the levels are stored in a sorted array instead
- * of a tree. Averagely speaking most activity is near the top of
- * the book, so the implementation only needs to go 1-5 levels deep
- * into the book. Thus using an array is fast since it improves
- * locality and uses less memory. Note though that the worst case
- * performance could be bad - if somebody adds and deletes orders
- * far away from the inside of the book it could result in longer
- * processing for those messages.
- *
- * Lastly, since the orders and levels are stored in their own global
- * pools, they are likely to be local and there is very little pressure
- * on the allocator. In fact the only allocations are bulk allocations
- * from stl container resizing.
- */
+
 
 typedef uint16_t  book_id_t;
 typedef uint32_t level_id_t;
@@ -81,26 +34,7 @@ bool constexpr is_bid(sprice_t const x) { return int32_t(x) >= 0; }
   
   
 
-/* A custom, pooling allocator. It uses a non-shrinking vector as its pool,
- * and a vector (LIFO stack) as its free list.
- * If there are no free locations, increment m_size, representing growing
- * the pool. If there is a free location, pop its address off the free list
- * and return that. To free an object, push its address onto the free list.
- * Note that pointers are not guaranteed to be stable across invocations
- * of `allocate`. To have a stable way of referencing an object use
- * `get` on its address.
- *
- * Performance: Since the pool and the free list are both represented
- * as arrays, an allocate is an increment if the free list is empty,
- * or a decrement and dereference (to the tail of the pool which is
- * likely in cache), if the free list is not empty.
- * A deallocate is a decrement and a write to memory.
- *
- * The implementation uses custom pointer types to save space, and
- * to preserve addresses if the underlying container is resized.
- * For instance we define `enum class order_id_t : uint32_t {}`
- * instead of (order *)
- */
+
 template <class B>
 class k
 {
@@ -146,15 +80,7 @@ class level
   level() {}
 };
 
-/* A datatype representing an order. Since this order book only wants
- * to know the size at each level it just remembers its quantity. If
- * one wanted to maintain knowledge about the queue it would probably
- * be fast to maintain a doubly linked list.
- * It also remember which book it belongs to and its price level. This
- * is so that given just an oid we can look up the book structure
- * as well as just the price level if we want to modify the quantity
- * at the level without searching for it in the book.
- */
+
 typedef struct order {
   qty_t m_qty;
   level_id_t level_idx;
